@@ -1,58 +1,249 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <title>面接チャット（ローカル UI）</title>
-  <style>
-    body { font-family: sans-serif; margin: 20px; }
-    #chat { width: 100%; height: 400px; border: 1px solid #ccc; padding: 10px; overflow-y: auto; }
-    .user { color: blue; margin-bottom: 10px; }
-    .bot { color: green; margin-bottom: 10px; }
-    input { width: 80%; padding: 10px; }
-    button { padding: 10px; }
-  </style>
+<meta charset="utf-8" />
+<title>面接チャット</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Hiragino Kaku Gothic ProN","Yu Gothic","Noto Sans JP",sans-serif}
+  body{background:#f6f7fb;color:#111;display:flex;flex-direction:column;align-items:center;padding:28px}
+  .container{width:720px;max-width:96%;background:#fff;border-radius:12px;box-shadow:0 6px 18px rgba(20,20,50,0.06);padding:18px}
+  h1{font-size:20px;margin:0 0 12px}
+  #chat{height:480px;overflow:auto;border:1px solid #e6e9ef;border-radius:8px;padding:12px;background:#fbfcff}
+  .msg{margin:8px 0;display:flex;gap:10px;align-items:flex-start}
+  .avatar{width:36px;height:36px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600;color:#fff}
+  .avatar.user{background:#2b8aee}
+  .avatar.bot{background:#27ae60}
+  .bubble{max-width:88%;padding:10px 12px;border-radius:10px;line-height:1.4}
+  .bubble.user{background:#eaf4ff;border:1px solid #d2e9ff}
+  .bubble.bot{background:#f0fff4;border:1px solid #d6f6dc}
+  .meta{font-size:12px;color:#667; margin-bottom:6px}
+  .input-area{display:flex;gap:8px;margin-top:12px;align-items:flex-end}
+  textarea{flex:1;min-height:56px;max-height:180px;padding:10px;border-radius:8px;border:1px solid #ddd;resize:vertical;font-size:14px}
+  button{background:#2b8aee;color:#fff;border:0;padding:10px 14px;border-radius:8px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.6;cursor:not-allowed}
+  .controls{display:flex;gap:8px;margin-top:12px;align-items:center}
+  .small-btn{background:#fff;border:1px solid #e0e0e0;color:#333;padding:8px 10px;border-radius:8px}
+  .status{font-size:13px;color:#444;margin-left:6px}
+  .footer{font-size:12px;color:#666;margin-top:10px}
+  pre{white-space:pre-wrap;word-wrap:break-word}
+</style>
 </head>
 <body>
 
-  <h2>面接チャット（ローカル UI）</h2>
+<div class="container" role="main">
+  <h1>面接チャット</h1>
 
-  <div id="chat"></div>
+  <div class="meta">接続先 API: <code id="apiUrl">http://127.0.0.1:8000/interview</code></div>
 
-  <div style="margin-top: 10px;">
-    <input id="msgInput" type="text" placeholder="メッセージを入力..." />
-    <button onclick="sendMessage()">送信</button>
+  <div id="chat" aria-live="polite"></div>
+
+  <div class="input-area">
+    <textarea id="inputBox" placeholder="面接の回答を入力してください。Enterで送信（Shift+Enterで改行）。"></textarea>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button id="sendBtn">送信</button>
+      <button id="resetBtn" class="small-btn" title="会話をリセット">開始・リセット</button>
+    </div>
   </div>
 
-  <script>
-    const API_URL = "http://127.0.0.1:8000/interview";  // FastAPI のエンドポイント
+  <div class="controls">
+    <button id="downloadBtn" class="small-btn">会話をダウンロード</button>
+    <div class="status" id="status"></div>
+  </div>
 
-    function addMessage(role, text) {
-      const chat = document.getElementById("chat");
-      const div = document.createElement("div");
-      div.className = role;
-      div.textContent = `${role === "user" ? "あなた" : "面接官"}：${text}`;
-      chat.appendChild(div);
-      chat.scrollTop = chat.scrollHeight; // 自動スクロール
-    }
+  <div class="footer">
+    ※ この UI はローカルの FastAPI (/interview) と通信します。API のポートやパスを変更した場合は上の API 表示箇所を書き換えてください。
+  </div>
+</div>
 
-    async function sendMessage() {
-      const input = document.getElementById("msgInput");
-      const msg = input.value.trim();
-      if (!msg) return;
+<script>
+(() => {
+  // --- 設定 ---
+  // FastAPI のエンドポイント（必要ならここを書き換えてください）
+  const API_URL = "http://127.0.0.1:8000/interview";
+  document.getElementById("apiUrl").textContent = API_URL;
 
-      addMessage("user", msg);
-      input.value = "";
+  // 履歴（フロント表示用）
+  let messages = [];
 
+    // DOM
+  const chatEl = document.getElementById("chat");
+  const inputBox = document.getElementById("inputBox");
+  const sendBtn = document.getElementById("sendBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const statusEl = document.getElementById("status");
+  const downloadBtn = document.getElementById("downloadBtn");
+
+  // user_id を localStorage に保持（ブラウザごとのセッション管理）
+  const storageKey = "interview_user_id_v1";
+  let userId = localStorage.getItem(storageKey);
+  
+  // シンプルな UUID v4 生成（十分な一意性）
+  localStorage.removeItem(storageKey);
+  userId = "u-" + ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  );
+  localStorage.setItem(storageKey, userId);
+  initMessage();
+  
+
+
+
+  
+
+  // ユーティリティ：スクロール下へ
+  function scrollBottom() {
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  // 表示追加
+  function addMessage(role, text) {
+    messages.push({role, text, ts: new Date().toISOString()});
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "msg " + role;
+
+    const avatar = document.createElement("div");
+    avatar.className = "avatar " + (role === "user" ? "user" : "bot");
+    avatar.textContent = role === "user" ? "あなた" : "面接官";
+
+    const bubbleWrap = document.createElement("div");
+    bubbleWrap.style.display = "flex";
+    bubbleWrap.style.flexDirection = "column";
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble " + (role === "user" ? "user" : "bot");
+    bubble.innerHTML = escapeHtml(text);
+
+    bubbleWrap.appendChild(bubble);
+
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(bubbleWrap);
+    chatEl.appendChild(wrapper);
+
+    scrollBottom();
+  }
+
+  function escapeHtml(s){
+    if(!s) return "";
+    return s.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll("\n","<br/>");
+  }
+
+  // 送信処理
+  let inflight = false;
+  async function sendMessage() {
+    if (inflight) return;
+    const text = inputBox.value.trim();
+    if (!text) return;
+
+    // UI
+    addMessage("user", text);
+    inputBox.value = "";
+    setStatus("送信中…");
+    sendBtn.disabled = true;
+    inflight = true;
+
+    try {
       const res = await fetch(API_URL, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ user_message: msg })
+        body: JSON.stringify({ user_id: userId, message: text })
       });
 
-      const data = await res.json();
-      addMessage("bot", data.reply);
-    }
-  </script>
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(`HTTP ${res.status} ${t}`);
+      }
 
+      const data = await res.json();
+      if (data.error) {
+        addMessage("bot", `エラー: ${data.error}`);
+      } else if (data.reply) {
+        addMessage("bot", data.reply);
+      } else {
+        addMessage("bot", "（予期しないレスポンスが返りました）");
+      }
+      setStatus("");
+    } catch (err) {
+      console.error(err);
+      addMessage("bot", `通信エラー: ${err.message}`);
+      setStatus("通信エラー");
+    } finally {
+      sendBtn.disabled = false;
+      inflight = false;
+      scrollBottom();
+    }
+  }
+
+  async function initMessage() {
+    const text = "";
+    setStatus("送信中…");
+    sendBtn.disabled = true;
+
+    try {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ user_id: userId, message: text })
+      });
+
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(`HTTP ${res.status} ${t}`);
+      }
+
+      const data = await res.json();
+      if (data.error) {
+        addMessage("bot", `エラー: ${data.error}`);
+      } else if (data.reply) {
+        addMessage("bot", data.reply);
+      } else {
+        addMessage("bot", "（予期しないレスポンスが返りました）");
+      }
+      setStatus("");
+    } catch (err) {
+      console.error(err);
+      addMessage("bot", `通信エラー: ${err.message}`);
+      setStatus("通信エラー");
+    } finally {
+      sendBtn.disabled = false;
+      scrollBottom();
+    }
+  }
+
+  // ステータス表示
+  function setStatus(s){ statusEl.textContent = s; }
+
+  // Enterで送信 (Shift+Enter で改行)
+  inputBox.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  sendBtn.addEventListener("click", sendMessage);
+
+  // 会話ダウンロード
+  downloadBtn.addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(messages, null, 2)], {type: "application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `interview_${userId}_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  // リセット（新しい user_id を作ってブラウザ側履歴を消す）
+  resetBtn.addEventListener("click", () => {
+    if (!confirm("会話をリセットします。サーバ側の履歴も新しい user_id に切り替わります（元に戻せません）。続けますか？")) return;
+    // 生成し直してリロード
+    location.reload();
+  });  
+})();
+</script>
 </body>
 </html>
